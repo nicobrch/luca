@@ -11,7 +11,7 @@ env:
   # TODO: Update these with the actual names from your Terraform variables
   ARTIFACT_REGISTRY_REPO: luca-artifact-repo
   SECRET_NAME: luca-secret
-  SERVICE_NAME: luca-github-actions-sa
+  SERVICE_NAME: luca-app
   IMAGE_NAME: luca-app
 
 jobs:
