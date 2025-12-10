@@ -1,0 +1,78 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: us-east4
+  # TODO: Update these with the actual names from your Terraform variables
+  ARTIFACT_REGISTRY_REPO: luca-artifact-repo
+  SECRET_NAME: luca-secret
+  SERVICE_NAME: luca-github-actions-sa
+  IMAGE_NAME: luca-app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Update Secret Manager
+        run: |
+          # Create a JSON file with the secrets
+          echo '${{ toJSON(secrets) }}' > all_secrets.json
+
+          # Filter only the specific secrets we want to push to GCP
+          # We construct a clean JSON object with only the application secrets
+          jq -n \
+            --arg google_api_key "${{ secrets.GOOGLE_API_KEY }}" \
+            --arg webhook_verify_token "${{ secrets.WEBHOOK_VERIFY_TOKEN }}" \
+            --arg whatsapp_api_token "${{ secrets.WHATSAPP_API_TOKEN }}" \
+            --arg whatsapp_phone_number_id "${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}" \
+            '{
+              GOOGLE_API_KEY: $google_api_key,
+              WEBHOOK_VERIFY_TOKEN: $webhook_verify_token,
+              WHATSAPP_API_TOKEN: $whatsapp_api_token,
+              WHATSAPP_PHONE_NUMBER_ID: $whatsapp_phone_number_id
+            }' > secrets.json
+
+          # Add a new version to the secret
+          gcloud secrets versions add ${{ env.SECRET_NAME }} --data-file=secrets.json
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.IMAGE_NAME }}
+          # Assuming the service is configured to use the secret we just updated
+          # If the secret is mounted as a volume or env vars, a new revision will pick up the latest version
